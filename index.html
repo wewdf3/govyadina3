@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no">
+<title>ГОВЯДИНА P2P</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}html,body{width:100%;height:100%;overflow:hidden;background:#111;font-family:Arial;color:#fff}
+canvas{display:block;width:100%;height:100%;touch-action:none}
+.screen{position:fixed;inset:0;z-index:100;display:flex;flex-direction:column;padding:16px;align-items:center;justify-content:center;background:radial-gradient(circle,#3a1010,#050505);text-align:center}
+.hidden{display:none!important}
+input{font-size:32px;padding:10px;width:200px;text-align:center;border-radius:10px;border:2px solid #f88;background:#222;color:#fff;margin:10px 0;font-family:monospace}
+button{font-size:20px;padding:12px 30px;background:#c00;color:#fff;border:2px solid #f77;border-radius:10px;margin:8px;font-weight:bold;cursor:pointer}
+button:active{transform:scale(0.95)}
+h1{color:#f44;text-shadow:0 0 20px red;margin-bottom:20px}
+#status{color:#ffd166;font-size:16px;margin-top:15px}
+#gameUI{display:none;position:fixed;top:10px;left:10px;right:10px;justify-content:space-between;z-index:50;pointer-events:none}
+.hp{background:rgba(0,0,0,0.7);padding:5px 15px;border-radius:10px;border:2px solid #fff;font-weight:bold}
+</style>
+<script src="https://unpkg.com/peerjs@1.5.0/dist/peerjs.min.js"></script>
+</head>
+<body>
+<div id="menu" class="screen">
+    <h1>ГОВЯДИНА P2P</h1>
+    <p>Игра по 4-значному коду</p>
+    <button onclick="createGame()">СОЗДАТЬ ИГРУ</button>
+    <div style="margin:10px 0;font-size:14px;color:#888">— ИЛИ —</div>
+    <input type="number" id="joinCode" placeholder="КОД" maxlength="4">
+    <button onclick="joinGame()">ПОДКЛЮЧИТЬСЯ</button>
+    <div id="status"></div>
+</div>
+<div id="gameUI">
+    <div class="hp" id="myHp">HP: 100</div>
+    <div class="hp" id="enemyHp">ВРАГ: 100</div>
+</div>
+<canvas id="cv"></canvas>
+<script>var peer = null;
+var conn = null;
+var isHost = false;
+var roomCode = null;
+
+function setStatus(text, color) {
+    var s = document.getElementById('status');
+    s.textContent = text;
+    s.style.color = color || '#ffd166';
+}
+function generateCode() { return Math.floor(1000 + Math.random() * 9000).toString(); }
+
+function createGame() {
+    roomCode = generateCode();
+    isHost = true;
+    setStatus("Создание комнаты...");
+    peer = new Peer('govyadina-room-' + roomCode, { debug: 0 });
+    peer.on('open', function(id) { setStatus("Ваш код: " + roomCode + "\nЖдем друга...", "#4be04b"); });
+    peer.on('connection', function(c) {
+        if(conn) return;
+        conn = c;
+        setupConnection();
+        setStatus("Друг подключился!", "#4be04b");
+        startGame();
+    });
+    peer.on('error', function(err) { setStatus("Ошибка сети: " + err.type, "#f44"); });
+}
+
+function joinGame() {
+    var code = document.getElementById('joinCode').value;
+    if(code.length !== 4) { setStatus("Введите 4 цифры", "#f44"); return; }
+    isHost = false;
+    setStatus("Подключение...");
+    peer = new Peer({ debug: 0 });
+    peer.on('open', function() {
+        conn = peer.connect('govyadina-room-' + code, { reliable: true });
+        conn.on('open', function() {
+            setupConnection();
+            setStatus("Подключено!", "#4be04b");
+            startGame();
+        });
+        conn.on('error', function() { setStatus("Неверный код или хост не найден", "#f44"); });
+    });
+    peer.on('error', function(err) { setStatus("Ошибка: " + err.type, "#f44"); });
+}
+
+function setupConnection() {
+    document.getElementById('menu').classList.add('hidden');
+    document.getElementById('gameUI').style.display = 'flex';
+    conn.on('data', function(data) {
+        if(data.type === 'state') {
+            remotePlayer = data.player;
+            remoteBullets = data.bullets;
+        }
+        if(data.type === 'hit') {
+            myHp -= data.dmg;
+            if(myHp <= 0) { myHp = 100; myX = Math.random() * W; myY = Math.random() * H; }
+        }
+    });
+}var cv = document.getElementById('cv');
+var cx = cv.getContext('2d');
+var W, H;
+function resize(){ W=cv.width=innerWidth; H=cv.height=innerHeight; }
+addEventListener('resize', resize); resize();
+
+var myX = 100, myY = 100, myAngle = 0, myHp = 100;
+var remotePlayer = null;
+var myBullets = [], remoteBullets = [];
+var isPlaying = false;
+var myColor = '#2ecc71', myDark = '#1e8449';
+var enemyColor = '#3498db', enemyDark = '#1f618d';
+var joy = {a:false, id:null, ox:0, oy:0, cx:0, cy:0, dx:0, dy:0};
+var aim = {a:false, id:null, x:0, y:0};
+
+cv.addEventListener('pointerdown', function(e){
+    if(!isPlaying) return;
+    if(e.clientX < W/2){
+        if(joy.a) return; joy.a=true; joy.id=e.pointerId;
+        joy.ox=joy.cx=e.clientX; joy.oy=joy.cy=e.clientY;
+    } else {
+        if(aim.a) return; aim.a=true; aim.id=e.pointerId;
+        aim.x=e.clientX; aim.y=e.clientY;
+    }
+}, {passive:false});
+
+cv.addEventListener('pointermove', function(e){
+    if(joy.a && joy.id===e.pointerId){
+        var dx=e.clientX-joy.ox, dy=e.clientY-joy.oy, d=Math.hypot(dx,dy), m=70;
+        if(d>m){ dx=dx/d*m; dy=dy/d*m }
+        joy.cx=joy.ox+dx; joy.cy=joy.oy+dy; joy.dx=dx/m; joy.dy=dy/m;
+    }
+    if(aim.a && aim.id===e.pointerId){ aim.x=e.clientX; aim.y=e.clientY; }
+}, {passive:false});
+
+function eP(e){
+    if(joy.a && joy.id===e.pointerId){ joy.a=false; joy.id=null; joy.dx=0; joy.dy=0; }
+    if(aim.a && aim.id===e.pointerId){ aim.a=false; aim.id=null; }
+}
+cv.addEventListener('pointerup', eP); cv.addEventListener('pointercancel', eP);
+
+function startGame() {
+    document.getElementById('menu').classList.add('hidden');
+    document.getElementById('gameUI').style.display = 'flex';
+    isPlaying = true;
+    if(isHost) { myX = 100; myY = H/2; }
+    else { myX = W-100; myY = H/2; }
+    loop();
+}var lastTime = performance.now();
+function loop(t) {
+    var dt = (t - lastTime) / 1000;
+    lastTime = t;
+    if(isPlaying) update(dt);
+    render();
+    requestAnimationFrame(loop);
+}
+
+function update(dt) {
+    myX += (joy.a ? joy.dx : 0) * 300 * dt;
+    myY += (joy.a ? joy.dy : 0) * 300 * dt;
+    myX = Math.max(20, Math.min(W-20, myX));
+    myY = Math.max(20, Math.min(H-20, myY));
+    if(aim.a) myAngle = Math.atan2(aim.y - myY, aim.x - myX);
+    
+    for(var i=myBullets.length-1; i>=0; i--) {
+        var b = myBullets[i];
+        b.x += b.vx * dt; b.y += b.vy * dt; b.life -= dt;
+        if(remotePlayer && Math.hypot(remotePlayer.x - b.x, remotePlayer.y - b.y) < 25) {
+            conn.send({type: 'hit', dmg: 20});
+            myBullets.splice(i,1); continue;
+        }
+        if(b.life <= 0) myBullets.splice(i,1);
+    }
+    if(conn && conn.open) {
+        conn.send({ type: 'state', player: {x: myX, y: myY, angle: myAngle, hp: myHp}, bullets: myBullets });
+    }
+    document.getElementById('myHp').textContent = 'HP: ' + myHp;
+    if(remotePlayer) document.getElementById('enemyHp').textContent = 'ВРАГ: ' + remotePlayer.hp;
+}
+
+function shoot() {
+    if(!isPlaying || !conn) return;
+    myBullets.push({
+        x: myX + Math.cos(myAngle)*22, y: myY + Math.sin(myAngle)*22,
+        vx: Math.cos(myAngle)*500, vy: Math.sin(myAngle)*500, life: 2
+    });
+}
+setInterval(function(){ if(aim.a) shoot(); }, 200);
+
+function render() {
+    cx.fillStyle='#151515'; cx.fillRect(0,0,W,H);
+    cx.strokeStyle='#222'; cx.lineWidth=1; cx.beginPath();
+    for(var x=0; x<W; x+=50){ cx.moveTo(x,0); cx.lineTo(x,H); }
+    for(var y=0; y<H; y+=50){ cx.moveTo(0,y); cx.lineTo(W,y); }
+    cx.stroke();
+    if(!isPlaying) return;
+    if(remoteBullets) {
+        for(var i=0; i<remoteBullets.length; i++) {
+            var b = remoteBullets[i];
+            cx.fillStyle='#f55'; cx.beginPath(); cx.arc(b.x,b.y,5,0,Math.PI*2); cx.fill();
+        }
+    }
+    for(var i=0; i<myBullets.length; i++) {
+        var b = myBullets[i];
+        cx.fillStyle='#ffd166'; cx.beginPath(); cx.arc(b.x,b.y,5,0,Math.PI*2); cx.fill();
+    }
+    if(remotePlayer) drawHuman(remotePlayer.x, remotePlayer.y, remotePlayer.angle, enemyColor, enemyDark, 'ВРАГ');
+    drawHuman(myX, myY, myAngle, myColor, myDark, 'ВЫ');
+    if(joy.a) {
+        cx.globalAlpha=0.5; cx.fillStyle='#333'; cx.beginPath(); cx.arc(joy.ox,joy.oy,70,0,Math.PI*2); cx.fill();
+        cx.strokeStyle='#f88'; cx.lineWidth=3; cx.stroke();
+        cx.fillStyle='#c00'; cx.beginPath(); cx.arc(joy.cx,joy.cy,28,0,Math.PI*2); cx.fill();
+        cx.strokeStyle='#fff'; cx.stroke(); cx.globalAlpha=1;
+    }
+}
+
+function drawHuman(x, y, a, col, dk, lbl) {
+    cx.beginPath(); cx.ellipse(x,y+12,22,9,0,0,Math.PI*2); cx.fillStyle='rgba(0,0,0,0.45)'; cx.fill();
+    cx.save(); cx.translate(x,y); cx.rotate(a);
+    cx.fillStyle=dk; cx.fillRect(-10,-14,9,12); cx.fillRect(-10,2,9,12);
+    var bg=cx.createRadialGradient(-3,-3,3,0,0,18); bg.addColorStop(0,col); bg.addColorStop(1,dk);
+    cx.fillStyle=bg; cx.beginPath(); cx.ellipse(0,0,15,13,0,0,Math.PI*2); cx.fill();
+    cx.strokeStyle='#000'; cx.lineWidth=2; cx.stroke();
+    cx.fillStyle='#f5cba7'; cx.beginPath(); cx.arc(6,0,10,0,Math.PI*2); cx.fill();
+    cx.strokeStyle='#000'; cx.stroke();
+    cx.fillStyle='#000'; cx.beginPath(); cx.arc(11,-3,1.5,0,Math.PI*2); cx.arc(11,3,1.5,0,Math.PI*2); cx.fill();
+    cx.restore();
+    cx.textAlign='center'; cx.font='bold 12px Arial'; cx.lineWidth=4; cx.strokeStyle='#000';
+    cx.strokeText(lbl,x,y-32); cx.fillStyle='#fff'; cx.fillText(lbl,x,y-32);
+}
+requestAnimationFrame(loop);
+</script>
+</body>
+</html>
